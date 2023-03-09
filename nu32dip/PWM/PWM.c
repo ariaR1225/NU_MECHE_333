@@ -1,88 +1,28 @@
-#include "nu32dip.h"                    // constants, functions for startup and UART
-#define NUMSAMPS 1000                   // num of poibts in waveform
-static volatile int Waceform[NUMSAMPS]; // waveform not cached (volatile) only in this C file (static)
-
-#define NUMSAMPS 1000
+#include "nu32dip.h"                   
+#define NUMSAMPS 1000                  
 #define PLOTPTS 200
 #define DECIMATION 10
-// number of points in waveform
-// number of data points to plot
-// plot every 10th point
+
 static volatile int Waveform[NUMSAMPS];
 static volatile int ADCarray[PLOTPTS];
 static volatile int REFarray[PLOTPTS];
 static volatile int StoringData = 0;
 static volatile float Kp = 0, Ki = 0;
 
+void __ISR(_TIMER_2_VECTOR, IPL5SOFT) Controller(void);
 void makeWaveform();
 unsigned int adc_sample_convert(int pin);
 
-void __ISR(_TIMER_2_VECTOR, IPL5SOFT) Controller(void)
-{
-  static int counter = 0;
-  static int adcval = adc_sample_convert(1);
-  int error = adcval - Waceform[counter] static int eint = 0;
-  eint = eint + error;
-  float u = Kp * ei + ki * eint;
-  float unew = u + 50.;
-  // safety
-
-  if (unew > 100)
-  {
-    unew = 100;
-  }
-
-  if (unew < 0)
-  {
-    unew = 0;
-  }
-
-  // insert line(s) to set OC1RS
-  OC1RS = (unsigned int)((unew / 100.0) * PR3);
-  counter++;
-  if (StoringData)
-  {
-    decctr++;
-    if (decctr == DECIMATION)
-    {
-      // initialize counter once
-      // index for data arrays; counts up to PLOTPTS
-      // counts to store data one every DECIMATION
-      //
-      // after DECIMATION control loops,
-      // reset decimation counter
-      // store data in global arrays
-      decctr = 0;
-      ADCarray[plotind] = adcval;
-      REFarray[plotind] = Waveform[counter];
-      plotind++;
-    }
-    if (plotind == PLOTPTS)
-    {
-      plotind = 0;
-      StoringData = 0;
-    }
-  }
-  counter++;
-  if (counter == NUMSAMPS)
-  {
-    // increment plot data index
-    // if max number of plot points plot is reached,
-    // reset the plot index
-    // tell main data is ready to be sent to MATLAB
-    // add one to counter every time ISR is entered
-    counter = 0; // rollover counter over when end of waveform reached
-  }
-  // insert line to clear interrupt flag
-}
 
 int main(void)
 {
   NU32DIP_Startup(); // cache on, interrupts on, LED/button init, UART init
   makeWaveform();
-
+  char message[100];           
+  float kptemp = 0, kitemp = 0; 
+  int i = 0;
   // make pin
-  RPB15bits.RPB15R = 0b0101;
+  RPB15Rbits.RPB15R = 0b0101;
   T3CONbits.TCKPS = 0;
   PR3 = 2400 - 1;
   TMR3 = 0;
@@ -97,7 +37,6 @@ int main(void)
   // AD1PCFGbits.PCFG14 = 0;                 // AN14 is an adc pin
   ANSELAbits.ANSA1 = 0; // use A1 as AN1
   AD1CON3bits.ADCS = 1; // ADC clock period is Tad = 2*(ADCS+1)*Tpb =
-                        //                           2*3*12.5ns = 75ns < 83ns
   AD1CON1bits.ADON = 1;
 
   __builtin_disable_interrupts(); // INT step 2: disable interrupts at CPU
@@ -114,9 +53,6 @@ int main(void)
 
   OC1RS = 1200; // set duty cycle to 50%
 
-  char message[100];            // message to and from MATLAB
-  float kptemp = 0, kitemp = 0; // temporary local gains
-  int i = 0;
   while (1)
   {
     NU32DIP_ReadUART1(message, sizeof(message)); // wait for a message from MATLAB
@@ -137,6 +73,63 @@ int main(void)
     }
   }
   return 0;
+}
+void __ISR(_TIMER_2_VECTOR, IPL5SOFT) Controller(void)
+{
+  static int counter = 0;
+  static int plotind = 0;
+  static int decctr = 0;
+  static int adcval;
+  adcval = adc_sample_convert(1);
+  int error = -adcval + Waveform[counter];
+  static int eint = 0;
+  eint = eint + error;
+  if (eint > 800){
+    eint = 800;
+  }
+  if (eint < -800){
+    eint = -800;
+  }
+  float u = Kp * error + Ki * eint;
+  float unew = u + 50.;
+  // safety
+
+  if (unew > 100.)
+  {
+    unew = 100.;
+  }
+
+  if (unew < 0.)
+  {
+    unew = 0.;
+  }
+
+  // insert line(s) to set OC1RS
+  OC1RS = (unsigned int)((unew / 100.0) * PR3);
+
+
+  if (StoringData)
+  {
+    decctr++;
+    if (decctr == DECIMATION)
+    {
+      decctr = 0;
+      ADCarray[plotind] = adcval;
+      REFarray[plotind] = Waveform[counter];
+      plotind++;
+    }
+    if (plotind == PLOTPTS)
+    {
+      plotind = 0;
+      StoringData = 0;
+    }
+  }
+  counter++;
+  if (counter == NUMSAMPS)
+  {
+    counter = 0; 
+  }
+  IFS0bits.T2IF = 0;
 }
 
 void makeWaveform()
